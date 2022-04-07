@@ -1,5 +1,6 @@
 # Usage
-```python3
+```bash
+pip install -r requirements.txt
 python main.py
 ```
 
