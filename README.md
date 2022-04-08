@@ -14,7 +14,8 @@ example `config.json`
     "host": YOUR_HOST,
     "ignoreExisted": true,
     "ignoreZero": true,
-    "limitGold": 0
+    "limitGold": 0,
+    "keepGold": false
   },
   "username": YOUR_USERNAME,
   "password": YOUR_PASSWORD
