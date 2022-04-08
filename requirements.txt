@@ -3,11 +3,15 @@
 # C:\Users\45817\Slash\Develop\Python\sse-spider\main.py: 9
 lxml == 4.8.0
 
+# C:\Users\45817\Slash\Develop\Python\sse-spider\main.py: 6
+maya == 0.6.1
+
 # C:\Users\45817\Slash\Develop\Python\sse-spider\main.py: 7
 pandas == 1.4.2
 
 # C:\Users\45817\Slash\Develop\Python\sse-spider\main.py: 8
 requests == 2.22.0
 
-# C:\Users\45817\Slash\Develop\Python\sse-spider\main.py: 10,11,12,13,14
-rich == 11.0.0
+# C:\Users\45817\Slash\Develop\Python\sse-spider\SSELog.py: 3,4
+# C:\Users\45817\Slash\Develop\Python\sse-spider\main.py: 11,12
+rich == 12.2.0

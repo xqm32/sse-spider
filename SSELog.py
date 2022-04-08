@@ -3,14 +3,14 @@ import logging
 from rich.logging import RichHandler
 from rich.traceback import install
 
-install(max_frames=1)
+install()
 
-FORMAT = '%(message)s'
+FORMAT = "%(message)s"
 logging.basicConfig(
-    level='INFO',
+    level="INFO",
     format=FORMAT,
-    datefmt='[%X]',
-    handlers=[RichHandler(rich_tracebacks=True)]
+    datefmt="[%X]",
+    handlers=[RichHandler(rich_tracebacks=True)],
 )
 
-log = logging.getLogger('rich')
+log = logging.getLogger("rich")

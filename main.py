@@ -123,7 +123,7 @@ class Trainer:
         data = {i.get("name"): i.get("value") for i in hidden}
 
         sessionID = []
-        for i in range(1, totalPages + 1):
+        for i in track(range(1, totalPages + 1), description="正在获取题目"):
             data.update(
                 {
                     "__EVENTTARGET": "ctl00$ContentPlaceHolder1$history1$AspNetPager1",
@@ -207,11 +207,13 @@ class Trainer:
         )
 
     @loginRequired("SSE")
-    def getProfile(self) -> pandas.DataFrame:
+    def getProfile(self) -> dict:
         """获取个人资料"""
+        log.info("正在获取信息...")
         profileASPX = self.session.get(
             f"{self.baseURL}/train/profile.aspx", params={"auth_id": self.authID}
         )
+        log.info("[green]获取信息成功[/]", extra={"markup": True})
 
         profile = pandas.read_html(profileASPX.text)[1]
         profile = profile.set_index(0)
@@ -286,6 +288,37 @@ class Trainer:
             with open(f"codes/{id}.c", "w", encoding="utf-8_sig") as f:
                 f.write(code)
             return "downloaded"
+
+    @loginRequired("SSE")
+    def crawlRank(self, maxPage=None) -> List[dict]:
+        rankASPX = self.session.get(
+            f"{self.baseURL}/train/rank.aspx", params={"auth_id": self.authID}
+        )
+        html = HTML(rankASPX.text)
+
+        lastPage = html.xpath('//a[contains(text(),"尾页")]')[0].get("href")
+        totalPages = int(lastPage.split("'")[-2]) if maxPage is None else maxPage
+
+        hidden = html.xpath('//input[@type="hidden"]')
+        data = {i.get("name"): i.get("value") for i in hidden}
+
+        rank = []
+        for i in track(range(1, totalPages + 1), description="正在获取排名"):
+            data.update(
+                {
+                    "__EVENTTARGET": "ctl00$ContentPlaceHolder1$rank1$AspNetPager1",
+                    "__EVENTARGUMENT": i,
+                }
+            )
+            rankASPX = self.session.post(
+                f"{self.baseURL}/train/rank.aspx",
+                params={"auth_id": self.authID},
+                data=data,
+            )
+            table = pandas.read_html(rankASPX.text)[1]
+            rank.extend(list(table.to_dict("index").values()))
+
+        return rank
 
     @loginRequired("SSE")
     def crawlCodes(self, sessionID, howMany=None) -> None:
@@ -411,3 +444,7 @@ if __name__ == "__main__":
     # n = int(Prompt.ask('需要消耗多少金币'))
     # trainer.crawlCodes(trainer.history(), howMany=n//10+1)
     # log.info(f'余额 {trainer.getGold()} 金币')
+    # # 方法五：获取排名
+    # rank = trainer.crawlRank()
+    # with open("rank.json", "w", encoding="utf-8_sig") as f:
+    #     json.dump(rank, f, ensure_ascii=False)
