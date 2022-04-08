@@ -116,6 +116,9 @@ class Trainer:
         )
         html = HTML(historyASPX.text)
 
+        if "暂无数据" in historyASPX.text:
+            raise NoDataError("未查询到历史数据")
+
         lastPage = html.xpath('//a[contains(text(),"尾页")]')[0].get("href")
         totalPages = int(lastPage.split("'")[-2]) if maxPage is None else maxPage
 

@@ -13,6 +13,11 @@ class UnexpectedResultError(Exception):
         super().__init__(what)
 
 
+class NoDataError(Exception):
+    def __init__(self, what):
+        super().__init__(what)
+
+
 class ManualInterrupt(Exception):
     def __init__(self, what):
         super().__init__(what)
