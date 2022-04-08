@@ -3,6 +3,7 @@ import os
 import re
 from typing import List
 
+import maya
 import pandas
 import requests
 from lxml.etree import HTML
@@ -22,7 +23,6 @@ class Trainer:
         host = siteConfig["host"]
         self.baseURL = f"{scheme}://{host}"
         self.session = requests.session()
-        self.authID = None
         self.savePath = savePath
 
         self.ignoreExisted = siteConfig["ignoreExisted"]
@@ -30,12 +30,20 @@ class Trainer:
         self.limitGold = siteConfig["limitGold"]
         self.keepGold = siteConfig["keepGold"]
 
-        self.logged = set()
+        self.logged: set = set()
+        self.profile: dict = None
+        self.authID: str = None
 
     @loginRequired("SSE")
     def afterLogin(self) -> None:
+        self.getProfile()
         if self.keepGold:
             self.limitGold = self.getGold()
+        if maya.when(self.getRegisterDate()) > maya.when("2021-09-01"):
+            log.info(
+                "[bold red]账号于[/] 2021-09-01 [bold red]后注册[/]",
+                extra={"markup": True},
+            )
         log.info(
             f'{"[bold blue]" if self.ignoreExisted else "[bold red]不"}跳过[/]已存在题目',
             extra={"markup": True},
@@ -208,12 +216,19 @@ class Trainer:
         profile = pandas.read_html(profileASPX.text)[1]
         profile = profile.set_index(0)
 
-        return profile[1]
+        self.profile = dict(profile[1])
+        return self.profile
+
+    @loginRequired("SSE")
+    def getRegisterDate(self) -> str:
+        """获取注册时间"""
+        profile = self.getProfile() if self.profile is None else self.profile
+        return profile["注册时间"]
 
     @loginRequired("SSE")
     def getGold(self) -> int:
         """获取金币数量"""
-        profile = self.getProfile()
+        profile = self.getProfile() if self.profile is None else self.profile
         return int(profile["金币数"])
 
     @loginRequired("SSE")
