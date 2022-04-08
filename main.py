@@ -34,9 +34,13 @@ class Trainer:
         self.profile: dict = None
         self.authID: str = None
 
+        self.sessionID: dict = None
+
     @loginRequired("SSE")
     def afterLogin(self) -> None:
+        log.info("正在获取信息...")
         self.getProfile()
+        log.info("[green]获取信息成功[/]", extra={"markup": True})
         if self.keepGold:
             self.limitGold = self.getGold()
         if maya.when(self.getRegisterDate()) > maya.when("2021-09-01"):
@@ -109,7 +113,12 @@ class Trainer:
         return self.session
 
     @loginRequired("SSE")
-    def history(self, maxPage: int = None) -> List[str]:
+    def history(self, maxPage: int = None, refresh=False) -> List[str]:
+        # 非强制刷新、历史已获取且历史数量不变则直接返回
+        if not refresh and self.sessionID and self.sessionID["maxPage"] == maxPage:
+            return self.sessionID["sessionID"]
+        self.sessionID = {"maxPage": maxPage}
+
         """查看做题历史"""
         historyASPX = self.session.get(
             f"{self.baseURL}/train/history.aspx", params={"auth_id": self.authID}
@@ -149,6 +158,7 @@ class Trainer:
                     ID = i.get("onclick").split("'")[-2]
                     sessionID.append(ID)
 
+        self.sessionID.update({"sessionID": sessionID})
         return sessionID
 
     @loginRequired("SSE")
@@ -212,11 +222,9 @@ class Trainer:
     @loginRequired("SSE")
     def getProfile(self) -> dict:
         """获取个人资料"""
-        log.info("正在获取信息...")
         profileASPX = self.session.get(
             f"{self.baseURL}/train/profile.aspx", params={"auth_id": self.authID}
         )
-        log.info("[green]获取信息成功[/]", extra={"markup": True})
 
         profile = pandas.read_html(profileASPX.text)[1]
         profile = profile.set_index(0)
@@ -225,16 +233,18 @@ class Trainer:
         return self.profile
 
     @loginRequired("SSE")
-    def getRegisterDate(self) -> str:
+    def getRegisterDate(self, refresh=False) -> str:
         """获取注册时间"""
-        profile = self.getProfile() if self.profile is None else self.profile
-        return profile["注册时间"]
+        if refresh:
+            self.getProfile()
+        return self.profile["注册时间"]
 
     @loginRequired("SSE")
-    def getGold(self) -> int:
+    def getGold(self, refresh=False) -> int:
         """获取金币数量"""
-        profile = self.getProfile() if self.profile is None else self.profile
-        return int(profile["金币数"])
+        if refresh:
+            self.getProfile()
+        return int(self.profile["金币数"])
 
     @loginRequired("SSE")
     def totalGold(self) -> int:
@@ -246,7 +256,7 @@ class Trainer:
     def neededGold(self) -> int:
         """计算所需的金币与已有的金币的差值"""
         howMuch = self.totalGold()
-        gold = self.getGold()
+        gold = self.getGold(refresh=True)
         need = howMuch - gold
         log.info(f"需要 {need} 金币 | 应当支付 {howMuch} 金币 | 余额 {gold} 金币")
         return need
@@ -328,11 +338,11 @@ class Trainer:
         """批量爬取代码"""
         existed: int = 0
         downloaded: int = 0
-        gold: int = self.getGold()
+        gold: int = self.getGold(refresh=True)
 
         for i in track(sessionID[:howMany], description="正在爬取代码"):
             if gold - 10 < self.limitGold:
-                realGold = self.getGold()
+                realGold = self.getGold(refresh=True)
                 if gold != realGold:
                     log.warning(f"余额 {gold} 与实际余额 {realGold} 不符")
                 else:
@@ -351,7 +361,7 @@ class Trainer:
                     downloaded += 1
                     gold -= 10
 
-        realGold = self.getGold()
+        realGold = self.getGold(refresh=True)
         log.info(f"余额 {realGold} 金币")
         log.info(
             f"新下载 [green]{downloaded}[/] 个代码 | 已存在 [yellow]{existed}[/] 个代码",
@@ -374,13 +384,20 @@ class Trainer:
         elif sessionID is None:
             sessionID = self.history()
 
-        for i in track(sessionID, description="正在寻找金币"):
-            text = self.viewGet(i)
-            # 检查重新评分按键是否在其中，注意一定要有双引号
-            if '"重新评分"' in text:
-                break
-        else:
-            raise UnexpectedResultError("未找到金币")
+        with Progress(
+            *Progress.get_default_columns(),
+            "[blue]探寻 {task.completed}/{task.total} 题目[/]",
+        ) as progress:
+            task = progress.add_task("正在寻找金币", total=len(sessionID))
+            for i in sessionID:
+                text = self.viewGet(i)
+                # 检查重新评分按键是否在其中，注意一定要有双引号
+                if '"重新评分"' in text:
+                    progress.update(task, completed=len(sessionID))
+                    break
+                progress.update(task, advance=1)
+            else:
+                raise UnexpectedResultError("未找到金币")
         # Python 语法糖
         sessionID = i
         html = HTML(text)
@@ -394,7 +411,7 @@ class Trainer:
             }
         )
 
-        gold = self.getGold()
+        gold = self.getGold(refresh=True)
 
         with Progress(
             *Progress.get_default_columns(), "[blue]{task.fields[info]}[/]"
@@ -414,7 +431,7 @@ class Trainer:
                     task, advance=1, info=f"余额 {gold+i+1}/{gold+howMuch} 金币"
                 )
 
-        realGold = self.getGold()
+        realGold = self.getGold(refresh=True)
         if gold + howMuch != realGold:
             raise UnexpectedResultError(f"余额 {gold} 与实际余额 {realGold} 不符")
 
@@ -442,11 +459,13 @@ if __name__ == "__main__":
     #     sid = trainer.pickUpQuestion()
     #     trainer.submitQuestion(sid)
     #     trainer.saveCode(sid)
+    # log.info(f'余额 {trainer.getGold(refresh=True)} 金币')
     # # 方法四：消耗金币术（历史题目）
     # trainer.ignoreExisted = False
-    # n = int(Prompt.ask('需要消耗多少金币'))
-    # trainer.crawlCodes(trainer.history(), howMany=n//10+1)
-    # log.info(f'余额 {trainer.getGold()} 金币')
+    # log.info(f"余额 {trainer.getGold()} 金币")
+    # n = int(Prompt.ask("需要消耗多少金币"))
+    # trainer.crawlCodes(trainer.history(), howMany=n // 10 + 1)
+    # log.info(f"余额 {trainer.getGold(refresh=True)} 金币")
     # # 方法五：获取排名
     # rank = trainer.crawlRank()
     # with open("rank.json", "w", encoding="utf-8_sig") as f:
