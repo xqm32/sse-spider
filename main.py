@@ -6,6 +6,7 @@ from typing import List
 import maya
 import pandas
 import requests
+from rich.markup import escape
 from lxml.etree import HTML
 from rich import print
 from rich.progress import Progress, track
@@ -38,16 +39,20 @@ class Trainer:
 
     @loginRequired("SSE")
     def afterLogin(self) -> None:
+        """登陆完成回显"""
         log.info("正在获取信息...")
         self.getProfile()
         log.info("[green]获取信息成功[/]", extra={"markup": True})
         if self.keepGold:
             self.limitGold = self.getGold()
         if maya.when(self.getRegisterDate()) > maya.when("2021-09-01"):
-            log.info(
-                "[bold red]账号于[/] 2021-09-01 [bold red]后注册[/]",
-                extra={"markup": True},
-            )
+            color, text = "red", "后"
+        else:
+            color, text = "green", "前"
+        log.info(
+            f"[bold {color}]账号于[/] [not bold]2021-09-01[/] [bold {color}]{text}注册[/]",
+            extra={"markup": True},
+        )
         log.info(
             f'{"[bold blue]" if self.ignoreExisted else "[bold red]不"}跳过[/]已存在题目',
             extra={"markup": True},
@@ -114,12 +119,13 @@ class Trainer:
 
     @loginRequired("SSE")
     def history(self, maxPage: int = None, refresh=False) -> List[str]:
+        """查看做题历史"""
+
         # 非强制刷新、历史已获取且历史数量不变则直接返回
         if not refresh and self.sessionID and self.sessionID["maxPage"] == maxPage:
             return self.sessionID["sessionID"]
         self.sessionID = {"maxPage": maxPage}
 
-        """查看做题历史"""
         historyASPX = self.session.get(
             f"{self.baseURL}/train/history.aspx", params={"auth_id": self.authID}
         )
@@ -163,7 +169,7 @@ class Trainer:
 
     @loginRequired("SSE")
     def pickUpQuestion(self, tagID=0, level=0) -> str:
-        """随机抽选一道题"""
+        """随机抽选题目"""
         pickUpQASPX = self.session.get(
             f"{self.baseURL}/train/action/pick-up-q.aspx",
             params={
@@ -177,6 +183,7 @@ class Trainer:
 
     @loginRequired("SSE")
     def submitQuestion(self, sessionID: str) -> None:
+        """提交题目"""
         qASPX = self.session.get(
             f"{self.baseURL}/train/q.aspx",
             params={
@@ -248,13 +255,13 @@ class Trainer:
 
     @loginRequired("SSE")
     def totalGold(self) -> int:
-        """总计所需的金币"""
+        """总计支付金币数量"""
         howMuch = len(self.history()) * 10
         return howMuch
 
     @loginRequired("SSE")
     def neededGold(self) -> int:
-        """计算所需的金币与已有的金币的差值"""
+        """总计所需金币数量"""
         howMuch = self.totalGold()
         gold = self.getGold(refresh=True)
         need = howMuch - gold
@@ -273,6 +280,7 @@ class Trainer:
         return code
 
     def saveCode(self, sessionID: str) -> str:
+        """保存代码"""
         if not os.path.exists("codes"):
             os.mkdir("codes")
 
@@ -304,6 +312,7 @@ class Trainer:
 
     @loginRequired("SSE")
     def crawlRank(self, maxPage=None) -> List[dict]:
+        """获取排名"""
         rankASPX = self.session.get(
             f"{self.baseURL}/train/rank.aspx", params={"auth_id": self.authID}
         )
@@ -335,36 +344,48 @@ class Trainer:
 
     @loginRequired("SSE")
     def crawlCodes(self, sessionID, howMany=None) -> None:
-        """批量爬取代码"""
+        """获取代码"""
+        failed: int = 0
         existed: int = 0
         downloaded: int = 0
         gold: int = self.getGold(refresh=True)
 
-        for i in track(sessionID[:howMany], description="正在爬取代码"):
-            if gold - 10 < self.limitGold:
-                realGold = self.getGold(refresh=True)
-                if gold != realGold:
-                    log.warning(f"余额 {gold} 与实际余额 {realGold} 不符")
-                else:
-                    log.info(f"已达限制 {self.limitGold} 金币 | 余额 {realGold} 金币")
-                    break
+        with Progress(
+            *Progress.get_default_columns(),
+            "[blue]获取 {task.completed}/{task.total} 代码[/]",
+        ) as progress:
+            task = progress.add_task("正在获取代码", total=len(sessionID[:howMany]))
+            for i, j in enumerate(sessionID[:howMany]):
+                if gold - 10 < self.limitGold:
+                    realGold = self.getGold(refresh=True)
+                    if gold != realGold:
+                        log.warning(f"余额 {gold} 与实际余额 {realGold} 不符")
+                        gold = realGold
+                    else:
+                        log.info(f"已达限制 {self.limitGold} 金币 | 余额 {realGold} 金币")
+                        progress.update(task, completed=i, total=i)
+                        break
 
-            result = self.saveCode(i)
-            match result:
-                case "insufficient":
-                    break
-                case "failed":
-                    continue
-                case "existed":
-                    existed += 1
-                case "downloaded":
-                    downloaded += 1
-                    gold -= 10
+                result = self.saveCode(j)
+                match result:
+                    case "insufficient":
+                        break
+                    case "failed":
+                        failed += 1
+                    case "existed":
+                        existed += 1
+                    case "downloaded":
+                        downloaded += 1
+                        gold -= 10
+
+                progress.update(task, advance=1)
 
         realGold = self.getGold(refresh=True)
         log.info(f"余额 {realGold} 金币")
         log.info(
-            f"新下载 [green]{downloaded}[/] 个代码 | 已存在 [yellow]{existed}[/] 个代码",
+            f"[green]新下载 {downloaded} 个代码[/] | "
+            f"[yellow]已存在 {existed} 个代码[/] | "
+            f"[red]失败 {failed} 个代码[/]",
             extra={"markup": True},
         )
 
@@ -378,7 +399,7 @@ class Trainer:
 
     @loginRequired("SSE")
     def incGold(self, howMuch: int, sessionID: List[str]) -> None:
-        """增加金币数量"""
+        """获取金币"""
         if howMuch < 1:
             return
         elif sessionID is None:
@@ -443,15 +464,20 @@ if __name__ == "__main__":
     trainer.login(config["username"], config["password"])
     # 方法一：爬取历史题目
     trainer.neededGold()
-    n = int(Prompt.ask("需要增加多少金币"))
+    gold = trainer.getGold()
+    n = int(Prompt.ask("需要增加多少金币", default="0"))
     trainer.incGold(n, trainer.history())
+    trainer.crawlCodes(trainer.history())
+    log.info(f"正在自动消耗金币...")
+    trainer.limitGold = gold
+    trainer.ignoreExisted = False
     trainer.crawlCodes(trainer.history())
     # # 方法二：爬取新题目
     # sid = trainer.pickUpQuestion()
     # trainer.submitQuestion(sid)
     # trainer.saveCode(sid)
     # # 方法三：消耗金币术（新题目）
-    # 此方法不能忽略已存在
+    # # 此方法不能忽略已存在
     # trainer.ignoreExisted = False
     # log.info(f'余额 {trainer.getGold()} 金币')
     # n = int(Prompt.ask('需要消耗多少金币'))
@@ -460,11 +486,11 @@ if __name__ == "__main__":
     #     trainer.submitQuestion(sid)
     #     trainer.saveCode(sid)
     # log.info(f'余额 {trainer.getGold(refresh=True)} 金币')
-    # # 方法四：消耗金币术（历史题目）
+    # 方法四：消耗金币术（历史题目）
     # trainer.ignoreExisted = False
     # log.info(f"余额 {trainer.getGold()} 金币")
     # n = int(Prompt.ask("需要消耗多少金币"))
-    # trainer.crawlCodes(trainer.history(), howMany=n // 10 + 1)
+    # trainer.crawlCodes(trainer.history(), howMany=n // 10)
     # log.info(f"余额 {trainer.getGold(refresh=True)} 金币")
     # # 方法五：获取排名
     # rank = trainer.crawlRank()
