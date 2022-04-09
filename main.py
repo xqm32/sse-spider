@@ -6,7 +6,6 @@ from typing import List
 import maya
 import pandas
 import requests
-from rich.markup import escape
 from lxml.etree import HTML
 from rich import print
 from rich.progress import Progress, track
@@ -19,36 +18,107 @@ from SSException import *
 
 class Trainer:
     def __init__(self, siteConfig: dict) -> None:
+        # 站点相关设置
         savePath = siteConfig["savePath"]
         scheme = siteConfig["scheme"]
         host = siteConfig["host"]
         self.baseURL = f"{scheme}://{host}"
         self.session = requests.session()
-        self.savePath = savePath
 
+        # 题目相关设置
+        self.savePath = savePath
         self.ignoreExisted = siteConfig["ignoreExisted"]
         self.ignoreZero = siteConfig["ignoreZero"]
+
+        # 金币相关设置
         self.limitGold = siteConfig["limitGold"]
         self.keepGold = siteConfig["keepGold"]
 
+        # 登录相关变量
         self.logged: set = set()
         self.profile: dict = None
         self.authID: str = None
-
         self.sessionID: dict = None
+
+    # @Login
+    # 以下为登录相关方法
+
+    @willLogin("SSE")
+    def login(self, username: str, password: str) -> requests.Session:
+        """登录"""
+        log.info(f"正在登录 {username}")
+
+        # 解析 HTML
+        loginASPX = self.session.get(f"{self.baseURL}/train/login.aspx")
+        html = HTML(loginASPX.text)
+
+        # hidden 表单获取
+        hidden = html.xpath('//input[@type="hidden"]')
+        data = {i.get("name"): i.get("value") for i in hidden}
+        data.update(
+            {
+                "__EVENTTARGET": "",
+                "__EVENTARGUMENT": "",
+                "ctl00$ContentPlaceHolder1$login1$TextBox1": username,
+                "ctl00$ContentPlaceHolder1$login1$TextBox2": password,
+                "ctl00$ContentPlaceHolder1$login1$Button1": "登录",
+            }
+        )
+
+        # 获取验证码
+        imgASPX = self.session.get(f"{self.baseURL}/train/action/img.aspx")
+        with open("verCode.png", "wb") as f:
+            f.write(imgASPX.content)
+
+        # 主循环
+        while True:
+            print("打开 [green]verCode.png[/] 查看验证码（回车更换）")
+            verCode = Prompt.ask("请输入验证码", default="r", show_default=False)
+            if verCode == "r":
+                # 获取验证码
+                imgASPX = self.session.get(f"{self.baseURL}/train/action/img.aspx")
+                with open("verCode.png", "wb") as f:
+                    f.write(imgASPX.content)
+                continue
+
+            # 更新数据
+            data.update({"ctl00$ContentPlaceHolder1$login1$TextBox3": verCode})
+
+            # 提交数据
+            loginASPX = self.session.post(f"{self.baseURL}/train/login.aspx", data=data)
+            if "验证码错误" in loginASPX.text:
+                log.error("验证码错误")
+            elif "密码错误" in loginASPX.text:
+                raise LoginError("密码错误")
+            else:
+                log.info("[green]登录成功[/]", extra={"markup": True})
+                break
+
+        # 从 302 跳转的 URL 获取 authID
+        self.authID = re.findall(r"auth_id=(.*)", loginASPX.url)[0]
+        # 执行登陆后方法
+        self.afterLogin()
+        return self.session
 
     @loginRequired("SSE")
     def afterLogin(self) -> None:
-        """登陆完成回显"""
+        """登陆完成"""
+        # 获取个人信息
         log.info("正在获取信息...")
         self.getProfile()
         log.info("[green]获取信息成功[/]", extra={"markup": True})
+
+        # 若保持金币不变，设定金币下限
         if self.keepGold:
             self.limitGold = self.getGold()
+
+        # 2021-09-01 前注册的账户一般不活跃
         if maya.when(self.getRegisterDate()) > maya.when("2021-09-01"):
             color, text = "red", "后"
         else:
             color, text = "green", "前"
+
+        # 输出信息
         log.info(
             f"[bold {color}]账号于[/] [not bold]2021-09-01[/] [bold {color}]{text}注册[/]",
             extra={"markup": True},
@@ -63,59 +133,125 @@ class Trainer:
         )
         log.info(f"限制金币数: {self.limitGold}")
 
-    # @willLogin('SSE')
-    def login(self, username: str, password: str) -> requests.Session:
-        """登录"""
-        log.info(f"正在登录 {username}")
+    # 以下为获取信息相关方法
 
-        loginASPX = self.session.get(f"{self.baseURL}/train/login.aspx")
-        html = HTML(loginASPX.text)
+    @loginRequired("SSE")
+    def getProfile(self) -> dict:
+        """获取个人信息"""
+        profileASPX = self.session.get(
+            f"{self.baseURL}/train/profile.aspx", params={"auth_id": self.authID}
+        )
 
+        profile = pandas.read_html(profileASPX.text)[1]
+        profile = profile.set_index(0)
+
+        self.profile = dict(profile[1])
+        return self.profile
+
+    @loginRequired("SSE")
+    def getRegisterDate(self, refresh=False) -> str:
+        """获取注册时间"""
+        if refresh:
+            self.getProfile()
+        return self.profile["注册时间"]
+
+    # @Gold
+    # 以下为金币相关方法
+
+    @loginRequired("SSE")
+    def getGold(self, refresh=False) -> int:
+        """获取金币数量"""
+        if refresh:
+            self.getProfile()
+        return int(self.profile["金币数"])
+
+    @loginRequired("SSE")
+    def totalGold(self) -> int:
+        """总计支付金币数量"""
+        howMuch = len(self.history()) * 10
+        return howMuch
+
+    @loginRequired("SSE")
+    def neededGold(self) -> int:
+        """总计所需金币数量"""
+        howMuch = self.totalGold()
+        gold = self.getGold(refresh=True)
+        need = howMuch - gold
+        log.info(f"需要 {need} 金币 | 应当支付 {howMuch} 金币 | 余额 {gold} 金币")
+        return need
+
+    @loginRequired("SSE")
+    def viewGet(self, sessionID: str) -> str:
+        viewASPX = self.session.get(
+            f"{self.baseURL}/train/view.aspx",
+            params={"session_id": sessionID, "auth_id": self.authID},
+        )
+        return viewASPX.text
+
+    @loginRequired("SSE")
+    def incGold(self, howMuch: int, sessionID: List[str]) -> None:
+        """获取金币"""
+        if howMuch < 1:
+            log.info("无需获取金币")
+            return
+        # 没有给出 sessionID 列表，则使用全部历史记录即可
+        elif sessionID is None:
+            sessionID = self.history()
+
+        with Progress(
+            *Progress.get_default_columns(),
+            "[blue]探寻 {task.completed}/{task.total} 题目[/]",
+        ) as progress:
+            task = progress.add_task("正在寻找金币", total=len(sessionID))
+            for i, j in enumerate(sessionID):
+                text = self.viewGet(j)
+                # 检查重新评分按键是否在其中，注意一定要有双引号
+                if '"重新评分"' in text:
+                    progress.update(task, total=i)
+                    break
+                progress.update(task, advance=1)
+            else:
+                raise UnexpectedResultError("未找到金币")
+        # Python 语法糖，i 的值会被保留
+        sessionID = j
+        html = HTML(text)
+
+        # hidden 表单获取
         hidden = html.xpath('//input[@type="hidden"]')
         data = {i.get("name"): i.get("value") for i in hidden}
         data.update(
             {
-                "__EVENTTARGET": "",
-                "__EVENTARGUMENT": "",
-                "ctl00$ContentPlaceHolder1$login1$TextBox1": username,
-                "ctl00$ContentPlaceHolder1$login1$TextBox2": password,
-                "ctl00$ContentPlaceHolder1$login1$Button1": "登录",
+                "ctl00$ContentPlaceHolder1$view1$print$Button2": "重新评分",
+                "ctl00$ContentPlaceHolder1$view1$print$TextBox1": "",
             }
         )
 
-        imgASPX = self.session.get(f"{self.baseURL}/train/action/img.aspx")
-        with open("verCode.png", "wb") as f:
-            f.write(imgASPX.content)
+        gold = self.getGold(refresh=True)
 
-        while True:
-            print("打开 [green]verCode.png[/] 查看验证码（回车更换）")
-            verCode = Prompt.ask("请输入验证码", default="r", show_default=False)
-
-            if verCode == "r":
-                imgASPX = self.session.get(f"{self.baseURL}/train/action/img.aspx")
-                with open("verCode.png", "wb") as f:
-                    f.write(imgASPX.content)
-                continue
-
-            data.update(
-                {
-                    "ctl00$ContentPlaceHolder1$login1$TextBox3": verCode,
-                }
+        with Progress(
+            *Progress.get_default_columns(), "[blue]{task.fields[info]}[/]"
+        ) as progress:
+            task = progress.add_task(
+                "正在获取金币", total=howMuch, info=f"余额 {gold}/{gold+howMuch} 金币"
             )
+            for i in range(howMuch):
+                viewASPX = self.session.post(
+                    f"{self.baseURL}/train/view.aspx",
+                    params={"session_id": sessionID, "auth_id": self.authID},
+                    data=data,
+                )
+                if viewASPX.status_code not in {302, 200}:
+                    raise SessionError(f"{sessionID} 出现错误 | 状态码 {viewASPX.status_code}")
+                progress.update(
+                    task, advance=1, info=f"余额 {gold+i+1}/{gold+howMuch} 金币"
+                )
 
-            loginASPX = self.session.post(f"{self.baseURL}/train/login.aspx", data=data)
-            if "验证码错误" in loginASPX.text:
-                log.error("验证码错误")
-            elif "密码错误" in loginASPX.text:
-                raise LoginError("密码错误")
-            else:
-                log.info("[green]登录成功[/]", extra={"markup": True})
-                break
+        realGold = self.getGold(refresh=True)
+        if gold + howMuch != realGold:
+            raise UnexpectedResultError(f"余额 {gold} 与实际余额 {realGold} 不符")
 
-        self.authID = re.findall(r"auth_id=(.*)", loginASPX.url)[0]
-        self.logged.add("SSE")
-        self.afterLogin()
-        return self.session
+    # @Question
+    # 以下为题目相关方法
 
     @loginRequired("SSE")
     def history(self, maxPage: int = None, refresh=False) -> List[str]:
@@ -137,6 +273,7 @@ class Trainer:
         lastPage = html.xpath('//a[contains(text(),"尾页")]')[0].get("href")
         totalPages = int(lastPage.split("'")[-2]) if maxPage is None else maxPage
 
+        # hidden 表单获取
         hidden = html.xpath('//input[@type="hidden"]')
         data = {i.get("name"): i.get("value") for i in hidden}
 
@@ -226,50 +363,47 @@ class Trainer:
             data={"rate": "1"},
         )
 
+    # @Rank
+    # 以下为获取排名相关方法
+
     @loginRequired("SSE")
-    def getProfile(self) -> dict:
-        """获取个人资料"""
-        profileASPX = self.session.get(
-            f"{self.baseURL}/train/profile.aspx", params={"auth_id": self.authID}
+    def crawlRank(self, maxPage=None) -> List[dict]:
+        """获取排名"""
+        rankASPX = self.session.get(
+            f"{self.baseURL}/train/rank.aspx", params={"auth_id": self.authID}
         )
+        html = HTML(rankASPX.text)
 
-        profile = pandas.read_html(profileASPX.text)[1]
-        profile = profile.set_index(0)
+        lastPage = html.xpath('//a[contains(text(),"尾页")]')[0].get("href")
+        totalPages = int(lastPage.split("'")[-2]) if maxPage is None else maxPage
 
-        self.profile = dict(profile[1])
-        return self.profile
+        hidden = html.xpath('//input[@type="hidden"]')
+        data = {i.get("name"): i.get("value") for i in hidden}
 
-    @loginRequired("SSE")
-    def getRegisterDate(self, refresh=False) -> str:
-        """获取注册时间"""
-        if refresh:
-            self.getProfile()
-        return self.profile["注册时间"]
+        rank = []
+        for i in track(range(1, totalPages + 1), description="正在获取排名"):
+            data.update(
+                {
+                    "__EVENTTARGET": "ctl00$ContentPlaceHolder1$rank1$AspNetPager1",
+                    "__EVENTARGUMENT": i,
+                }
+            )
+            rankASPX = self.session.post(
+                f"{self.baseURL}/train/rank.aspx",
+                params={"auth_id": self.authID},
+                data=data,
+            )
+            table = pandas.read_html(rankASPX.text)[1]
+            rank.extend(list(table.to_dict("index").values()))
 
-    @loginRequired("SSE")
-    def getGold(self, refresh=False) -> int:
-        """获取金币数量"""
-        if refresh:
-            self.getProfile()
-        return int(self.profile["金币数"])
+        return rank
 
-    @loginRequired("SSE")
-    def totalGold(self) -> int:
-        """总计支付金币数量"""
-        howMuch = len(self.history()) * 10
-        return howMuch
-
-    @loginRequired("SSE")
-    def neededGold(self) -> int:
-        """总计所需金币数量"""
-        howMuch = self.totalGold()
-        gold = self.getGold(refresh=True)
-        need = howMuch - gold
-        log.info(f"需要 {need} 金币 | 应当支付 {howMuch} 金币 | 余额 {gold} 金币")
-        return need
+    # @Code
+    # 以下为获取代码相关方法
 
     def getCode(self, sessionID: str) -> str | None:
         """获取代码"""
+        # 获取代码是不需要 authID 的
         getCodeASPX = self.session.get(
             f"{self.baseURL}/train/action/get-code.aspx",
             params={"session_id": sessionID},
@@ -311,38 +445,6 @@ class Trainer:
             return "downloaded"
 
     @loginRequired("SSE")
-    def crawlRank(self, maxPage=None) -> List[dict]:
-        """获取排名"""
-        rankASPX = self.session.get(
-            f"{self.baseURL}/train/rank.aspx", params={"auth_id": self.authID}
-        )
-        html = HTML(rankASPX.text)
-
-        lastPage = html.xpath('//a[contains(text(),"尾页")]')[0].get("href")
-        totalPages = int(lastPage.split("'")[-2]) if maxPage is None else maxPage
-
-        hidden = html.xpath('//input[@type="hidden"]')
-        data = {i.get("name"): i.get("value") for i in hidden}
-
-        rank = []
-        for i in track(range(1, totalPages + 1), description="正在获取排名"):
-            data.update(
-                {
-                    "__EVENTTARGET": "ctl00$ContentPlaceHolder1$rank1$AspNetPager1",
-                    "__EVENTARGUMENT": i,
-                }
-            )
-            rankASPX = self.session.post(
-                f"{self.baseURL}/train/rank.aspx",
-                params={"auth_id": self.authID},
-                data=data,
-            )
-            table = pandas.read_html(rankASPX.text)[1]
-            rank.extend(list(table.to_dict("index").values()))
-
-        return rank
-
-    @loginRequired("SSE")
     def crawlCodes(self, sessionID, howMany=None) -> None:
         """获取代码"""
         failed: int = 0
@@ -361,9 +463,10 @@ class Trainer:
                     if gold != realGold:
                         log.warning(f"余额 {gold} 与实际余额 {realGold} 不符")
                         gold = realGold
+                        log.info(f"重置余额为 {gold}")
                     else:
                         log.info(f"已达限制 {self.limitGold} 金币 | 余额 {realGold} 金币")
-                        progress.update(task, completed=i, total=i)
+                        # progress.update(task, completed=i, total=i)
                         break
 
                 result = self.saveCode(j)
@@ -388,73 +491,6 @@ class Trainer:
             f"[red]失败 {failed} 个代码[/]",
             extra={"markup": True},
         )
-
-    @loginRequired("SSE")
-    def viewGet(self, sessionID: str) -> str:
-        viewASPX = self.session.get(
-            f"{self.baseURL}/train/view.aspx",
-            params={"session_id": sessionID, "auth_id": self.authID},
-        )
-        return viewASPX.text
-
-    @loginRequired("SSE")
-    def incGold(self, howMuch: int, sessionID: List[str]) -> None:
-        """获取金币"""
-        if howMuch < 1:
-            return
-        elif sessionID is None:
-            sessionID = self.history()
-
-        with Progress(
-            *Progress.get_default_columns(),
-            "[blue]探寻 {task.completed}/{task.total} 题目[/]",
-        ) as progress:
-            task = progress.add_task("正在寻找金币", total=len(sessionID))
-            for i in sessionID:
-                text = self.viewGet(i)
-                # 检查重新评分按键是否在其中，注意一定要有双引号
-                if '"重新评分"' in text:
-                    progress.update(task, completed=len(sessionID))
-                    break
-                progress.update(task, advance=1)
-            else:
-                raise UnexpectedResultError("未找到金币")
-        # Python 语法糖
-        sessionID = i
-        html = HTML(text)
-
-        hidden = html.xpath('//input[@type="hidden"]')
-        data = {i.get("name"): i.get("value") for i in hidden}
-        data.update(
-            {
-                "ctl00$ContentPlaceHolder1$view1$print$Button2": "重新评分",
-                "ctl00$ContentPlaceHolder1$view1$print$TextBox1": "",
-            }
-        )
-
-        gold = self.getGold(refresh=True)
-
-        with Progress(
-            *Progress.get_default_columns(), "[blue]{task.fields[info]}[/]"
-        ) as progress:
-            task = progress.add_task(
-                "正在获取金币", total=howMuch, info=f"余额 {gold}/{gold+howMuch} 金币"
-            )
-            for i in range(howMuch):
-                viewASPX = self.session.post(
-                    f"{self.baseURL}/train/view.aspx",
-                    params={"session_id": sessionID, "auth_id": self.authID},
-                    data=data,
-                )
-                if viewASPX.status_code not in {302, 200}:
-                    raise SessionError(f"{sessionID} 出现错误 | 状态码 {viewASPX.status_code}")
-                progress.update(
-                    task, advance=1, info=f"余额 {gold+i+1}/{gold+howMuch} 金币"
-                )
-
-        realGold = self.getGold(refresh=True)
-        if gold + howMuch != realGold:
-            raise UnexpectedResultError(f"余额 {gold} 与实际余额 {realGold} 不符")
 
 
 if __name__ == "__main__":
