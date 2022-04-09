@@ -21,3 +21,7 @@ example `config.json`
   "password": YOUR_PASSWORD
 }
 ```
+
+# TODO
+- [ ] Auto complete
+- [ ] Auto login
