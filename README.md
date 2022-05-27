@@ -4,7 +4,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-You can get related scripts at https://greasyfork.org/zh-CN/scripts/445612-sse-helper
+You can get related scripts at https://greasyfork.org/scripts/445612
 
 # Config
 example `config.json`
